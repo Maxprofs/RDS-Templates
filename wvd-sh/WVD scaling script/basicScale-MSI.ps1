@@ -140,16 +140,26 @@ Import-Module "Microsoft.RDInfra.RDPowershell"
 
 $isServicePrincipalBool = ($isServicePrincipal -eq "True")
 
-#Authenticating to WVD
+# MSI based authentication
+#    - In order to rely on this, please add the MSI accounts as VM contributors at resource group level
 Add-AzureRmAccount -Identity
+
+
+#select the current Azure Subscription specified in the config
+Select-AzureRmSubscription -SubscriptionId $currentAzureSubscriptionId
+
+#Authenticating to WVD
+
+# Building credentials from KeyVault
+$WVDServicePrincipalPwd = (Get-AzureKeyVaultSecret -VaultName $KeyVaultName -Name $KeyVaultSecretName).SecretValue
+$WVDCreds = New-Object -TypeName System.Management.Automation.PSCredential -ArgumentList($Username, $WVDServicePrincipalPwd)
+
 if (!$isServicePrincipalBool) {
   # if standard account is provided login in WVD with that account 
 
 
   try {
-	$WvdSecurepass = (Get-AzureKeyVaultSecret -VaultName $KeyVaultName -Name $KeyName).SecretValue
-    $WvdCredential = New-Object -TypeName System.Management.Automation.PSCredential -ArgumentList($Username, $WvdSecurepass)
-    $authentication = Add-RdsAccount -DeploymentUrl $RDBroker -Credential $WvdCredential
+	$authentication = Add-RdsAccount -DeploymentUrl $RDBroker -Credential $WVDCreds
 
   }
   catch {
@@ -166,9 +176,7 @@ else {
 
 
   try {
-    $wvdAppSecurepass = (Get-AzureKeyVaultSecret -VaultName $KeyVaultName -Name $Username).SecretValue
-    $wvdAppCredential = New-Object -TypeName System.Management.Automation.PSCredential -ArgumentList($Username, $wvdAppSecurepass)
-    $authentication = Add-RdsAccount -DeploymentUrl $RDBroker -TenantId $AADTenantId -Credential $wvdAppCredential -ServicePrincipal
+    $authentication = Add-RdsAccount -DeploymentUrl $RDBroker -TenantId $AADTenantId -Credential $wvdAppCreds -ServicePrincipal
 
   }
   catch {
@@ -181,58 +189,25 @@ else {
 }
 
 
-#Authenticating to Azure
-#Add-AzureRmAccount -Identity
-
-if (!$isServicePrincipalBool) {
-  # if standard account is provided login in Azure with that account 
-
-
-  try {
-  
-    $AzSecurepass = (Get-AzureKeyVaultSecret -VaultName $KeyVaultName -Name $KeyName).SecretValue
-    $AzCredential = New-Object -TypeName System.Management.Automation.PSCredential -ArgumentList($Username, $AzSecurepass)
-    $azureauthentication = Connect-AzureRmAccount -SubscriptionId $currentAzureSubscriptionId -Credential $AzCredential
-    
-  }
-  catch {
-    Write-Log 1 "Failed to authenticate with Azure with standard account: $($_.exception.message)" "Error"
-
-    exit 1
-
-  }
-  $azobj = $azureauthentication | Out-String
-  Write-Log 3 "Authenticating as standard account for Azure. Result: `n$azobj" "Info"
-}
-else {
-  # if service principal account is provided login in Azure with that account 
-  try {
-  
-    $AzAppSecurepass = (Get-AzureKeyVaultSecret -VaultName $KeyVaultName -Name $AADApplicationID).SecretValue
-    $AzAppCreds = New-Object -TypeName System.Management.Automation.PSCredential -ArgumentList($AADApplicationID, $AzAppSecurepass)
-    $azureauthentication = Connect-AzureRmAccount -ServicePrincipal -Credential $AzAppCreds -TenantId $AADTenantId
-
-  }
-  catch {
-    Write-Log 1 "Failed to authenticate with Azure with service principal: $($_.exception.message)" "Error"
-
-    exit 1
-  }
-  $azobj = $azureauthentication | Out-String
-  Write-Log 3 "Authenticating as service principal account for Azure. Result:`n$azobj" "Info"
-}
-
-
-
 #Set context to the appropriate tenant group
 Write-Log 1 "Running switching to the $tenantGroupName context" "Info"
 Set-RdsContext -TenantGroupName $tenantGroupName
 
-#select the current Azure Subscription specified in the config
-Select-AzureRmSubscription -SubscriptionId $currentAzureSubscriptionId
-#Set-AzureRmContext -SubscriptionID $currentAzureSubscriptionId
-#Construct Begin time and End time for the Peak period
-$CurrentDateTime = Get-Date
+        #Construct Begin time and End time for the Peak period Unable to set it to allow connections
+        $CurrentDateTime = Get-Date
+        $TimeDifferenceMinutes = 0 
+        if($TimeDifferenceInHours -match ":")
+        {
+        $TimeDifferenceHours = $TimeDifferenceInHours.Split(":")[0]
+        $TimeDifferenceMinutes = $TimeDifferenceInHours.Split(":")[1]
+        }
+        else
+        {
+        $TimeDifferenceHours = $TimeDifferenceInHours
+        }
+        #Azure is using UTC time, justify it to the local time
+        $CurrentDateTime = $CurrentDateTime.AddHours($TimeDifferenceHours).AddMinutes($TimeDifferenceMinutes)
+
 
 #Splitting session load balancing peak hours
 $BeginPeakHour = $sessionLoadBalancingPeakHours.Split("-")[0]
@@ -418,7 +393,7 @@ if ($hostpoolInfo.LoadBalancerType -eq "DepthFirst") {
               if ($sHost.Status -eq "Unavailable") {
                 Write-Log 1 "Existing Sessionhost Sessions value reached near by hostpool maximumsession limit need to start the session host" "Info"
                 $sessionhostname = $sHost.sessionhostname
-                #Check session host is in Drain Mode
+                #Check session host is in allow new connection mode
                 $checkAllowNewSession = Get-RdsSessionHost -TenantName $tenantname -HostPoolName $hostpoolname -Name $sessionhostname
                 if (!($checkAllowNewSession.AllowNewSession)) {
                   Set-RdsSessionHost -TenantName $tenantname -HostPoolName $hostpoolname -Name $sessionhostname -AllowNewSession $true
@@ -487,7 +462,7 @@ if ($hostpoolInfo.LoadBalancerType -eq "DepthFirst") {
               Set-RdsSessionHost -TenantName $tenantName -HostPoolName $hostPoolName -Name $sessionHost -AllowNewSession $false -ErrorAction SilentlyContinue
             }
             catch {
-              Write-Log 1 "Failed to set drain mode on session host: $($sessionHost.SessionHost) with error: $($_.exception.message)" "Info"
+              Write-Log 1 "Unable to set it to allow connections on session host: $($sessionHost.SessionHost) with error: $($_.exception.message)" "Info"
               exit
             }
             #notify user to log off session
@@ -567,7 +542,7 @@ if ($hostpoolInfo.LoadBalancerType -eq "DepthFirst") {
               Set-RdsSessionHost -TenantName $tenantName -HostPoolName $hostPoolName -Name $sessionHost -AllowNewSession $true -ErrorAction SilentlyContinue
             }
             catch {
-              Write-Log 1 "Failed to set drain mode on session host: $($sessionHost.SessionHost) with error: $($_.exception.message)" "Error"
+              Write-Log 1 "Unable to set it to allow connections on session host: $($sessionHost.SessionHost) with error: $($_.exception.message)" "Error"
               exit 1
             }
 
@@ -819,7 +794,7 @@ else {
                 }
                 catch {
 
-                  Write-Log 1 "Failed to set drain mode on session host: $($sessionHost.SessionHost) with error: $($_.exception.message)" "Error"
+                  Write-Log 1 "Unable to set it to allow connections on session host: $($sessionHost.SessionHost) with error: $($_.exception.message)" "Error"
                   exit 1
 
                 }
@@ -922,7 +897,7 @@ else {
                     Set-RdsSessionHost -TenantName $tenantName -HostPoolName $hostPoolName -Name $sessionHost -AllowNewSession $true -ErrorAction SilentlyContinue
                   }
                   catch {
-                    Write-Log 1 "Failed to set drain mode on session host: $($sessionHost.SessionHost) with error: $($_.exception.message)" "Error"
+                    Write-Log 1 "Unable to set it to allow connections on session host: $($sessionHost.SessionHost) with error: $($_.exception.message)" "Error"
                     exit 1
                   }
                   $vm = Get-AzureRmVM -Status | Where-Object { $_.Name -eq $roleInstance.Name }

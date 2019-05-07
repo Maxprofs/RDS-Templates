@@ -69,12 +69,12 @@ function Write-UsageLog {
     [string]$logfilename = $RdmiTenantUsagelog
   )
   $time = Get-Date
-  if($depthBool){
-    
+  if ($depthBool) {
+
     Add-Content $logfilename -Value ("{0}, {1}, {2}" -f $time,$hostpoolName,$vmcount)
-    }
-    else
-    {
+  }
+  else
+  {
     Add-Content $logfilename -Value ("{0}, {1}, {2}, {3}" -f $time,$hostpoolName,$corecount,$vmcount)
   }
 }
@@ -113,7 +113,7 @@ if (Test-Path $JsonPath) {
 }
 else {
   #$Validate = $false
- Write-Error "Missing $JsonPath - Unable to proceed"
+  Write-Error "Missing $JsonPath - Unable to proceed"
   Write-Log 3 "Missing $JsonPath - Unable to proceed" "Error"
   exit 1
 }
@@ -129,8 +129,8 @@ $Variable.RDMIScale.Deployment | ForEach-Object { $_.Variable } | Where-Object {
 
 # Checking WVD Modules are existed or not
 $WVDModules = Get-Module -Name "Microsoft.RDInfra.RDPowershell" -ErrorAction SilentlyContinue
-if(!$WVDModules){
-Install-Module "Microsoft.RDInfra.RDPowershell" -AllowClobber
+if (!$WVDModules) {
+  Install-Module "Microsoft.RDInfra.RDPowershell" -AllowClobber
 }
 Import-Module "Microsoft.RDInfra.RDPowershell"
 ##### Login with delegated access in WVD tenant #####
@@ -166,21 +166,36 @@ else {
 ##### Authenticating to Azure #####
 $appCreds = Get-StoredCredential -UserName $AADApplicationId
 try {
-     $authentication = Add-AzureRmAccount -SubscriptionId $currentAzureSubscriptionId -Credential $appCreds
-  }
+  $authentication = Add-AzureRmAccount -SubscriptionId $currentAzureSubscriptionId -Credential $appCreds
+}
 catch {
-    Write-Log 1 "Failed to authenticate with Azure with a standard account: $($_.exception.message)" "Error"
-    exit 1
+  Write-Log 1 "Failed to authenticate with Azure with a standard account: $($_.exception.message)" "Error"
+  exit 1
 }
 
 ##### Set context to the appropriate tenant group #####
-Write-Log  1 "Running switching to the $tenantGroupName context" "Info"
+Write-Log 1 "Running switching to the $tenantGroupName context" "Info"
 Set-RdsContext -TenantGroupName $tenantGroupName
 
 ##### select the current Azure subscription specified in the config #####
 Select-AzureRmSubscription -SubscriptionId $currentAzureSubscriptionId
-##### Construct Begin time and End time for the Peak period #####
+##### Construct Begin time and End time for the Peak period from utc to local time #####
 $CurrentDateTime = Get-Date
+$TimeDifferenceMinutes = 0
+if ($TimeDifferenceInHours -match ":")
+{
+  $TimeDifferenceHours = $TimeDifferenceInHours.Split(":")[0]
+  $TimeDifferenceMinutes = $TimeDifferenceInHours.Split(":")[1]
+}
+else
+{
+  $TimeDifferenceHours = $TimeDifferenceInHours
+}
+#Azure is using UTC time, justify it to the local time
+$CurrentDateTime = $CurrentDateTime.AddHours($TimeDifferenceHours).AddMinutes($TimeDifferenceMinutes)
+
+
+
 #Splitting session load balancing peak hours
 $BeginPeakHour = $sessionLoadBalancingPeakHours.Split("-")[0]
 $EndPeakHour = $sessionLoadBalancingPeakHours.Split("-")[1]
@@ -192,61 +207,61 @@ $PeakEndDateTime = [datetime]::Parse($CurrentDateTime.ToShortDateString() + ' ' 
 
 
 
-        #check the calculated end time is later than begin time in case of time zone
-        if ($PeakEndDateTime -lt $PeakBeginDateTime) {
-          $PeakEndDateTime = $EndPeakDateTime.AddDays(1)
-        }
+#check the calculated end time is later than begin time in case of time zone
+if ($PeakEndDateTime -lt $PeakBeginDateTime) {
+  $PeakEndDateTime = $EndPeakDateTime.AddDays(1)
+}
 
-        $hostpoolInfo = Get-RdsHostPool -TenantName $tenantName -Name $hostPoolName
+$hostpoolInfo = Get-RdsHostPool -TenantName $tenantName -Name $hostPoolName
 
-        #Compare session loadbalancing peak hours and setting up appropriate load balacing type based on PeakLoadBalancingType
-        if ($CurrentDateTime -ge $PeakBeginDateTime -and $CurrentDateTime -le $PeakEndDateTime) {
+#Compare session loadbalancing peak hours and setting up appropriate load balacing type based on PeakLoadBalancingType
+if ($CurrentDateTime -ge $PeakBeginDateTime -and $CurrentDateTime -le $PeakEndDateTime) {
 
-        Write-Log 3 "Changing Hostpool Load Balance Type: Current Date Time is: $CurrentDateTime" "Info"
+  Write-Log 3 "Changing Hostpool Load Balance Type: Current Date Time is: $CurrentDateTime" "Info"
 
-                if($PeakLoadBalancingType -eq "DepthFirst")
-                {
-                Write-Log 3 "Hostpool Load balancer Type in Session Load Balancing Peak Hours is '$PeakLoadBalancingType Load Balancing'"
-                Set-RdsHostPool -TenantName $tenantName -Name $hostPoolName -DepthFirstLoadBalancer -MaxSessionLimit $hostpoolInfo.MaxSessionLimit
-                }
-                else
-                {
-                Write-Log 3 "Hostpool Load balancer Type in Session Load Balancing Peak Hours is '$PeakLoadBalancingType Load Balancing'"
-                Set-RdsHostPool -TenantName $tenantName -Name $hostPoolName -BreadthFirstLoadBalancer -MaxSessionLimit $hostpoolInfo.MaxSessionLimit
-                }
-        }
+  if ($PeakLoadBalancingType -eq "DepthFirst")
+  {
+    Write-Log 3 "Hostpool Load balancer Type in Session Load Balancing Peak Hours is '$PeakLoadBalancingType Load Balancing'"
+    Set-RdsHostPool -TenantName $tenantName -Name $hostPoolName -DepthFirstLoadBalancer -MaxSessionLimit $hostpoolInfo.MaxSessionLimit
+  }
+  else
+  {
+    Write-Log 3 "Hostpool Load balancer Type in Session Load Balancing Peak Hours is '$PeakLoadBalancingType Load Balancing'"
+    Set-RdsHostPool -TenantName $tenantName -Name $hostPoolName -BreadthFirstLoadBalancer -MaxSessionLimit $hostpoolInfo.MaxSessionLimit
+  }
+}
 
-        #Splitting session load balancing off peak hours
-        $BeginOffPeakHour = $sessionLoadBalancingOffPeakHours.Split("-")[0]
-        $EndOffPeakHour = $sessionLoadBalancingOffPeakHours.Split("-")[1]
-
-
-        $OffPeakBeginDateTime = [datetime]::Parse($CurrentDateTime.ToShortDateString() + ' ' + $BeginOffPeakHour)
-
-        $OffPeakEndDateTime = [datetime]::Parse($CurrentDateTime.ToShortDateString() + ' ' + $EndOffPeakHour)
+#Splitting session load balancing off peak hours
+$BeginOffPeakHour = $sessionLoadBalancingOffPeakHours.Split("-")[0]
+$EndOffPeakHour = $sessionLoadBalancingOffPeakHours.Split("-")[1]
 
 
-        #check the calculated end time is later than begin time in case of time zone
-        if ($OffPeakEndDateTime -lt $OffPeakBeginDateTime) {
-          $OffPeakEndDateTime = $EndPeakDateTime.AddDays(1)
-        }
+$OffPeakBeginDateTime = [datetime]::Parse($CurrentDateTime.ToShortDateString() + ' ' + $BeginOffPeakHour)
 
-        #Compare session loadbalancing off peak hours and setting up appropriate load balacing type based on offPeakLoadBalancingType
-        if ($CurrentDateTime -ge $OffPeakBeginDateTime -and $CurrentDateTime -le $OffPeakEndDateTime) {
+$OffPeakEndDateTime = [datetime]::Parse($CurrentDateTime.ToShortDateString() + ' ' + $EndOffPeakHour)
 
-        Write-Log 3 "Changing Hostpool Load Balance Type: Current Date Time is: $CurrentDateTime" "Info"
 
-                if($OffPeakLoadBalancingType -eq "DepthFirst")
-                {
-                Write-Log 3 "Hostpool Load balancer Type in Session Load Balancing off Peak Hours is '$OffPeakLoadBalancingType Load Balancing' "
-                Set-RdsHostPool -TenantName $tenantName -Name $hostPoolName -DepthFirstLoadBalancer -MaxSessionLimit $hostpoolInfo.MaxSessionLimit
-                }
-                else
-                {
-                Write-Log 3 "Hostpool Load balancer Type in Session Load Balancing off Peak Hours is '$PeakLoadBalancingType Load Balancing'"
-                Set-RdsHostPool -TenantName $tenantName -Name $hostPoolName -BreadthFirstLoadBalancer -MaxSessionLimit $hostpoolInfo.MaxSessionLimit
-                }
-            }
+#check the calculated end time is later than begin time in case of time zone
+if ($OffPeakEndDateTime -lt $OffPeakBeginDateTime) {
+  $OffPeakEndDateTime = $EndPeakDateTime.AddDays(1)
+}
+
+#Compare session loadbalancing off peak hours and setting up appropriate load balacing type based on offPeakLoadBalancingType
+if ($CurrentDateTime -ge $OffPeakBeginDateTime -and $CurrentDateTime -le $OffPeakEndDateTime) {
+
+  Write-Log 3 "Changing Hostpool Load Balance Type: Current Date Time is: $CurrentDateTime" "Info"
+
+  if ($OffPeakLoadBalancingType -eq "DepthFirst")
+  {
+    Write-Log 3 "Hostpool Load balancer Type in Session Load Balancing off Peak Hours is '$OffPeakLoadBalancingType Load Balancing' "
+    Set-RdsHostPool -TenantName $tenantName -Name $hostPoolName -DepthFirstLoadBalancer -MaxSessionLimit $hostpoolInfo.MaxSessionLimit
+  }
+  else
+  {
+    Write-Log 3 "Hostpool Load balancer Type in Session Load Balancing off Peak Hours is '$PeakLoadBalancingType Load Balancing'"
+    Set-RdsHostPool -TenantName $tenantName -Name $hostPoolName -BreadthFirstLoadBalancer -MaxSessionLimit $hostpoolInfo.MaxSessionLimit
+  }
+}
 
 Write-Log 3 "Starting WVD Tenant Hosts Scale Optimization: Current Date Time is: $CurrentDateTime" "Info"
 
@@ -260,10 +275,10 @@ if ($EndPeakDateTime -lt $BeginPeakDateTime) {
 }
 $hostpoolInfo = Get-RdsHostPool -TenantName $tenantName -Name $hostPoolName
 if ($hostpoolInfo.LoadBalancerType -eq "DepthFirst") {
-Write-Log 1 "$hostPoolName hostpool loadbalancer type is $($hostpoolInfo.LoadBalancerType)" "Info"
+  Write-Log 1 "$hostPoolName hostpool loadbalancer type is $($hostpoolInfo.LoadBalancerType)" "Info"
   if ($CurrentDateTime -ge $BeginPeakDateTime -and $CurrentDateTime -le $EndPeakDateTime) {
 
-    Write-Log 1  "It is in peak hours now" "Info"
+    Write-Log 1 "It is in peak hours now" "Info"
     Write-Log 1 "Peak hours: starting session hosts as needed based on current workloads." "Info"
     $hostpoolMaxSessionLimit = $hostpoolinfo.MaxSessionLimit
     ##### Get the session hosts in the hostpool #####
@@ -276,27 +291,27 @@ Write-Log 1 "$hostPoolName hostpool loadbalancer type is $($hostpoolInfo.LoadBal
     }
 
     if ($hostpoolMaxSessionLimit -le 10) {
-        $sessionlimit = $hostpoolMaxSessionLimit - 1
-        
-        }
-    elseif($hostpoolMaxSessionLimit -le 50) {
-        $sessionlimitofhost = $hostpoolMaxSessionLimit / 4
-        $var = $hostpoolMaxSessionLimit - $sessionlimitofhost
-        $sessionlimit = [math]::Round($var)
-        
+      $sessionlimit = $hostpoolMaxSessionLimit - 1
+
     }
-    elseif($hostpoolMaxSessionLimit -gt 50)
+    elseif ($hostpoolMaxSessionLimit -le 50) {
+      $sessionlimitofhost = $hostpoolMaxSessionLimit / 4
+      $var = $hostpoolMaxSessionLimit - $sessionlimitofhost
+      $sessionlimit = [math]::Round($var)
+
+    }
+    elseif ($hostpoolMaxSessionLimit -gt 50)
     {
-       $sessionlimit = $hostpoolMaxSessionLimit - 10
-       
+      $sessionlimit = $hostpoolMaxSessionLimit - 10
+
     }
- 
- Write-Log 1 "Hostpool Maximum Session Limit: $($hostpoolMaxSessionLimit)"
+
+    Write-Log 1 "Hostpool Maximum Session Limit: $($hostpoolMaxSessionLimit)"
 
     ##### Check the number of running session hosts #####
     $numberOfRunningHost = 0
     foreach ($sessionHost in $getHosts) {
-           
+
       Write-Log 1 "Checking session host:$($sessionHost.SessionHostName | Out-String)  of sessions:$($sessionHost.Sessions) and status:$($sessionHost.Status)" "Info"
 
       $sessionCapacityofhost = $sessionhost.Sessions
@@ -305,13 +320,13 @@ Write-Log 1 "$hostPoolName hostpool loadbalancer type is $($hostpoolInfo.LoadBal
         $numberOfRunningHost = $numberOfRunningHost + 1
       }
     }
-    Write-Log 1  "Current number of running hosts: $numberOfRunningHost" "Info"
+    Write-Log 1 "Current number of running hosts: $numberOfRunningHost" "Info"
     if ($numberOfRunningHost -lt $MinimumNumberOfRDSH) {
-      Write-Log 1  "Current number of running session hosts is less than minimum requirements, start session host ..." "Info"
+      Write-Log 1 "Current number of running session hosts is less than minimum requirements, start session host ..." "Info"
 
       foreach ($sessionhost in $getHosts) {
 
-         if ($numberOfRunningHost -lt $MinimumNumberOfRDSH) {
+        if ($numberOfRunningHost -lt $MinimumNumberOfRDSH) {
           $hostsessions = $sessionHost.Sessions
           if ($hostpoolMaxSessionLimit -ne $hostsessions) {
             if ($sessionhost.Status -eq "UnAvailable") {
@@ -332,19 +347,19 @@ Write-Log 1 "$hostPoolName hostpool loadbalancer type is $($hostpoolInfo.LoadBal
                 exit
               }
               ##### Wait for the sessionhost is available #####
-                $IsHostAvailable = $false
-                while (!$IsHostAvailable) {
+              $IsHostAvailable = $false
+              while (!$IsHostAvailable) {
 
-                  $hoststatus = Get-RdsSessionHost -TenantName $tenantname -HostPoolName $hostpoolname -Name $sessionHost.sessionhostname
+                $hoststatus = Get-RdsSessionHost -TenantName $tenantname -HostPoolName $hostpoolname -Name $sessionHost.sessionhostname
 
-                  if ($hoststatus.Status -eq "Available") {
-                    $IsHostAvailable = $true
-                  }
+                if ($hoststatus.Status -eq "Available") {
+                  $IsHostAvailable = $true
                 }
+              }
             }
           }
           $numberOfRunningHost = $numberOfRunningHost + 1
-          }
+        }
       }
     }
 
@@ -353,9 +368,9 @@ Write-Log 1 "$hostPoolName hostpool loadbalancer type is $($hostpoolInfo.LoadBal
       foreach ($sessionhost in $getHosts) {
         if (!($sessionHost.Sessions -eq $hostpoolMaxSessionLimit)) {
           if ($sessionHost.Sessions -ge $sessionlimit) {
-          foreach($sHost in $getHosts){
-                if ($sHost.Status -eq "Available" -and $sHost.Sessions -eq 0) { break }
-                if ($sHost.Status -eq "Unavailable") {
+            foreach ($sHost in $getHosts) {
+              if ($sHost.Status -eq "Available" -and $sHost.Sessions -eq 0) { break }
+              if ($sHost.Status -eq "Unavailable") {
                 Write-Log 1 "Existing Sessionhost Sessions value reached near by hostpool maximumsession limit need to start the session host" "Info"
                 $sessionhostname = $sHost.sessionhostname
                 ##### Check session host is in drain mode #####
@@ -386,19 +401,19 @@ Write-Log 1 "$hostPoolName hostpool loadbalancer type is $($hostpoolInfo.LoadBal
                 $numberOfRunningHost = $numberOfRunningHost + 1
                 break
               }
+            }
           }
         }
       }
     }
-    }
-    Write-Log 1  "HostpoolName:$hostpoolname, NumberofRunnighosts:$numberOfRunningHost" "Info"
+    Write-Log 1 "HostpoolName:$hostpoolname, NumberofRunnighosts:$numberOfRunningHost" "Info"
     $depthBool = $true
     Write-UsageLog $hostPoolName $numberOfRunningHost $depthBool
   }
   else {
-    Write-Log 1  "It is Off-peak hours" "Info"
-    Write-Log 1  "It is off-peak hours. Starting to scale down RD session hosts..." "Info"
-    Write-Log 1  ("Processing hostPool {0}" -f $hostPoolName) "Info"
+    Write-Log 1 "It is Off-peak hours" "Info"
+    Write-Log 1 "It is off-peak hours. Starting to scale down RD session hosts..." "Info"
+    Write-Log 1 ("Processing hostPool {0}" -f $hostPoolName) "Info"
     try {
       $getHosts = Get-RdsSessionHost -TenantName $tenantName -HostPoolName $hostPoolName | Sort-Object Sessions
     }
@@ -409,7 +424,7 @@ Write-Log 1 "$hostPoolName hostpool loadbalancer type is $($hostpoolInfo.LoadBal
     ##### Check number of running session hosts #####
     $numberOfRunningHost = 0
     foreach ($sessionHost in $getHosts) {
-       if ($sessionHost.Status -eq "Available") {
+      if ($sessionHost.Status -eq "Available") {
         $numberOfRunningHost = $numberOfRunningHost + 1
       }
     }
@@ -427,7 +442,7 @@ Write-Log 1 "$hostPoolName hostpool loadbalancer type is $($hostpoolInfo.LoadBal
               Set-RdsSessionHost -TenantName $tenantName -HostPoolName $hostPoolName -Name $sessionHost -AllowNewSession $false -ErrorAction SilentlyContinue
             }
             catch {
-              Write-Log 1 "Failed to set drain mode on session host: $($sessionHost.SessionHost) with error: $($_.exception.message)" "Info"
+              Write-Log 1 "Unable to set it to allow connections on session host: $($sessionHost.SessionHost) with error: $($_.exception.message)" "Info"
               exit
             }
             ##### Get the user sessions in the host pool #####
@@ -440,7 +455,7 @@ Write-Log 1 "$hostPoolName hostpool loadbalancer type is $($hostpoolInfo.LoadBal
             }
             $hostUserSessionCount = ($hostPoolUserSessions | Where-Object -FilterScript { $_.sessionhostname -eq $sessionHost }).Count
             Write-Log 1 "Counting the current sessions on the host $sessionhost...:$hostUserSessionCount" "Info"
-            
+
             $existingSession = 0
             foreach ($session in $hostPoolUserSessions) {
               if ($session.sessionhostname -eq $sessionHost) {
@@ -462,7 +477,7 @@ Write-Log 1 "$hostPoolName hostpool loadbalancer type is $($hostpoolInfo.LoadBal
             Start-Sleep -Seconds $LimitSecondsToForceLogOffUser
             if ($LimitSecondsToForceLogOffUser -ne 0) {
               ##### Force users to log off #####
-              Write-Log 1  "Force users to log off..." "Info"
+              Write-Log 1 "Force users to log off..." "Info"
               try {
                 $hostPoolUserSessions = Get-RdsUserSession -TenantName $tenantName -HostPoolName $hostPoolName
 
@@ -501,12 +516,12 @@ Write-Log 1 "$hostPoolName hostpool loadbalancer type is $($hostpoolInfo.LoadBal
               }
             }
 
-			# Ensure the Azure VMs that are off have the AllowNewSession mode set to True
+            # Ensure the Azure VMs that are off have the AllowNewSession mode set to True
             try {
               Set-RdsSessionHost -TenantName $tenantName -HostPoolName $hostPoolName -Name $sessionHost -AllowNewSession $true -ErrorAction SilentlyContinue
             }
             catch {
-              Write-Log 1 "Failed to set drain mode on session host: $($sessionHost.SessionHost) with error: $($_.exception.message)" "Error"
+              Write-Log 1 "Unable to set it to allow connections on session host: $($sessionHost.SessionHost) with error: $($_.exception.message)" "Error"
               exit 1
             }
             ##### Decrement number of running session host #####
@@ -514,12 +529,12 @@ Write-Log 1 "$hostPoolName hostpool loadbalancer type is $($hostpoolInfo.LoadBal
           }
         }
       }
-      
+
     }
-    Write-Log 1  "HostpoolName:$hostpoolname, NumberofRunnighosts:$numberOfRunningHost" "Info"
+    Write-Log 1 "HostpoolName:$hostpoolname, NumberofRunnighosts:$numberOfRunningHost" "Info"
     $depthBool = $true
     Write-UsageLog $hostPoolName $numberOfRunningHost $depthBool
-}
+  }
   Write-Log 3 "End WVD Tenant Scale Optimization." "Info"
 }
 else {
@@ -549,7 +564,7 @@ else {
     ##### Check number of running session hosts #####
     $numberOfRunningHost = 0
 
-	##### Total of running cores #####
+    ##### Total of running cores #####
     $totalRunningCores = 0
 
     ##### Total capacity of sessions of running VMs #####
@@ -557,7 +572,7 @@ else {
 
     foreach ($sessionHost in $RDSessionHost.sessionhostname) {
       Write-Log 1 "Checking session host: $($sessionHost)" "Info"
-           
+
       $VMName = $sessionHost.Split(".")[0]
       $roleInstance = Get-AzureRmVM -Status | Where-Object { $_.Name.Contains($VMName) }
       if ($sessionHost.ToLower().Contains($roleInstance.Name.ToLower())) {
@@ -759,7 +774,7 @@ else {
                 if ($instance -ne $null -and $instance.ProvisioningState -eq "Succeeded") {
                   $isInstanceReady = $true
                 }
-            
+
               }
 
               if ($isInstanceReady) {
@@ -769,11 +784,11 @@ else {
                 }
                 catch {
 
-                  Write-Log 1 "Failed to set drain mode on session host: $($sessionHost.SessionHost) with error: $($_.exception.message)" "Error"
+                  Write-Log 1 "Unable to set it to allow connections on session host: $($sessionHost.SessionHost) with error: $($_.exception.message)" "Error"
                   exit 1
 
                 }
-                
+
                 ##### Get the user sessions in the host pool #####
                 try {
 
@@ -787,7 +802,7 @@ else {
 
                 $hostUserSessionCount = ($hostPoolUserSessions | Where-Object -FilterScript { $_.sessionhostname -eq $sessionHost }).Count
                 Write-Log 1 "Counting the current sessions on the host $sessionhost...:$hostUserSessionCount" "Info"
-                
+
                 $existingSession = 0
 
                 foreach ($session in $hostPoolUserSessions) {
@@ -872,7 +887,7 @@ else {
                     Set-RdsSessionHost -TenantName $tenantName -HostPoolName $hostPoolName -Name $sessionHost -AllowNewSession $true -ErrorAction SilentlyContinue
                   }
                   catch {
-                    Write-Log 1 "Failed to set drain mode on session host: $($sessionHost.SessionHost) with error: $($_.exception.message)" "Error"
+                    Write-Log 1 "Unable to set it to allow connections on session host: $($sessionHost.SessionHost) with error: $($_.exception.message)" "Error"
                     exit 1
                   }
                   $vm = Get-AzureRmVM -Status | Where-Object { $_.Name -eq $roleInstance.Name }
@@ -889,11 +904,11 @@ else {
 
     }
     ##### Write to the usage log #####
-	Write-Log 1 "HostpoolName:$hostpoolName, TotalRunningCores:$totalRunningCores NumberOfRunningHost:$numberOfRunningHost" "Info"
-    
+    Write-Log 1 "HostpoolName:$hostpoolName, TotalRunningCores:$totalRunningCores NumberOfRunningHost:$numberOfRunningHost" "Info"
+
     $depthBool = $false
     Write-UsageLog $hostPoolName $totalRunningCores $numberOfRunningHost $depthBool
-  } 
+  }
   ##### Scale host pools ##### 
   Write-Log 3 "End WVD Tenant Scale Optimization." "Info"
 }
